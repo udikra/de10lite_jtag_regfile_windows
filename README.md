@@ -13,7 +13,8 @@ The verified setup is a DE10-Lite with MAX 10 `10M50DAF484C7G`, classic USB-Blas
 - `regfile/`: installable Python package with `read_reg`, `write_reg`, and `close`.
 - `usb_blaster.py`: direct classic USB-Blaster USB/JTAG transport.
 - `verify_regfile.py` and `demo_regfile.py`: random all-register test and interactive demo.
-- `switch_usb_driver.ps1`: read device status and switch between Quartus and the captured PyUSB driver.
+- `usb_driver_setup.sh` and `usb_driver.sh`: one-time setup, then prompt-free switching between the Quartus and PyUSB drivers.
+- `switch_usb_driver.ps1`: the PowerShell implementation behind both scripts.
 - `test_*.py`: board-independent tests.
 
 ## Hardware And Software
@@ -67,7 +68,7 @@ C:/Users/<user>/Anaconda3/python.exe -m venv .venv
 
 ## Build And Program The FPGA
 
-Quartus programming requires its Altera driver. If the adapter is currently using WinUSB or libusb0, first restore the Quartus driver using the elevated PowerShell instructions below.
+Quartus programming requires its Altera driver. If the adapter is currently using WinUSB or libusb0, first restore the Quartus driver with `./usb_driver.sh altera` (see below).
 
 From Git Bash in the project directory, compile the sources:
 
@@ -98,33 +99,33 @@ Close Quartus and other JTAG applications before using Python. Zadig must bind t
 3. Select **Altera USB-Blaster** and confirm the ID is `09FB:6001` (`USB\VID_09FB&PID_6001`). Do not select unrelated `0403:6015` FTDI adapters.
 4. Select either **libusb-win32** or **WinUSB**, then click **Replace Driver** or **Install Driver**.
 
-The verified run used Zadig's **libusb-win32** driver, which Windows reports as service `libusb0`. The PyUSB backend also supports WinUSB. Do not change this device's driver while a Quartus process is using it.
+The verified run used Zadig's **libusb-win32** driver, which Windows reports as service `libusb0`. The PyUSB backend also supports WinUSB.
 
-From Git Bash, check the active binding:
+Zadig leaves its driver package in the Windows driver store, so it is needed only once per machine. After that, switching between the two drivers is done from Git Bash as described next; `./usb_driver.sh status` should now report mode `pyusb`.
 
-```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$PWD")\switch_usb_driver.ps1" -Mode status
-```
+## Switch Drivers Without Admin Prompts
 
-Expected PyUSB services are `libusb0`, `WinUSB`, or `libusbK`. Capture the active PyUSB INF path (read-only; no elevation needed):
+Changing a device driver needs administrator rights. Run the one-time setup once (it shows a single UAC prompt):
 
 ```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$PWD")\switch_usb_driver.ps1" -Mode capture-pyusb
+./usb_driver_setup.sh
 ```
 
-Save the printed `C:\Windows\INF\oemNN.inf` path. Driver changes require an elevated PowerShell window. From that window, opened in the project directory:
+It copies `switch_usb_driver.ps1` to `C:\Program Files\de10lite_usb_switch\` and registers two scheduled tasks, `\de10lite\usb-driver-altera` and `\de10lite\usb-driver-pyusb`, which run that copy with highest privileges for the current user and without a window. The copy sits in an admin-only folder so a user-writable file can never run elevated; re-run the setup after editing `switch_usb_driver.ps1`. Remove everything with `./usb_driver_setup.sh --uninstall`.
 
-```powershell
-.\switch_usb_driver.ps1 -Mode altera
+Then switch from Git Bash, or from any other script, with no prompt:
+
+```bash
+./usb_driver.sh altera   # Quartus driver, for quartus_pgm / jtagconfig
+./usb_driver.sh pyusb    # Zadig libusb driver, for the Python package
+./usb_driver.sh status   # show the bound driver
 ```
 
-The `altera` mode restores the signed driver shipped with Quartus at `C:\intelFPGA_lite\23.1std\quartus\drivers\usb-blaster\usbblstr.inf`. To return to the captured PyUSB driver later:
+`usb_driver.sh` waits until the switch has taken effect and exits 0 on success, including when the requested driver is already bound, and nonzero otherwise, so it can gate a script step, for example `./usb_driver.sh pyusb && python verify_regfile.py`. The board must be connected. On the verified PC a switch takes about 4 s.
 
-```powershell
-.\switch_usb_driver.ps1 -Mode pyusb -PyUsbInf 'C:\Windows\INF\oemNN.inf'
-```
+No `oemNN.inf` name needs to be recorded. Each run asks `pnputil /enum-devices /deviceid "USB\VID_09FB&PID_6001" /drivers` which driver packages match the USB-Blaster: `usbblstr.inf` from Quartus is the `altera` driver, and the Zadig libusb-win32, libusbK, or WinUSB package is the `pyusb` driver. From an already elevated shell the same commands switch directly, without the scheduled tasks.
 
-Replace `oemNN.inf` with the path captured from this machine. After each change, use `-Mode status` to check the bound service. Driver re-binding interrupts USB access; if the board resets or loses power, program the SOF again.
+Do not switch drivers while a Quartus process is using the cable. Driver re-binding interrupts USB access; if the board resets or loses power, program the SOF again.
 
 ## Python API
 
@@ -146,6 +147,7 @@ close()
 Run the test from Git Bash while the SOF is loaded and a PyUSB-compatible driver is active:
 
 ```bash
+./usb_driver.sh pyusb
 python verify_regfile.py
 ```
 
