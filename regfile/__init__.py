@@ -17,12 +17,12 @@ def _get_device() -> UsbBlaster:
 
 
 def write_reg(address: int, data: int) -> None:
-    """Write one unsigned 32-bit value to register address 0..15."""
+    """Write one unsigned 32-bit value to a JTAG-written register, address 0..7."""
     _get_device().write_reg(address, data)
 
 
 def read_reg(address: int) -> int:
-    """Return the unsigned 32-bit value stored at register address 0..15."""
+    """Return the unsigned 32-bit value at address 0..15 (8..15 are system-written)."""
     return _get_device().read_reg(address)
 
 

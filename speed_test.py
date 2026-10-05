@@ -7,7 +7,7 @@ from regfile import close, read_reg, write_reg
 
 
 ITERATIONS = 1000
-REGISTER_COUNT = 16
+REGISTER_COUNT = 8  # JTAG-writable (JWSR) registers
 
 
 def main() -> None:

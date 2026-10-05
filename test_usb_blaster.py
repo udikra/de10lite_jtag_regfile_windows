@@ -1,7 +1,16 @@
 import unittest
 from unittest.mock import Mock
 
-from usb_blaster import UsbBlaster, VIRTUAL_IR_SELECTOR, decode_response, encode_request
+from usb_blaster import (
+    DONE_BIT,
+    NOP_FRAME,
+    OVERRUN_BIT,
+    UsbBlaster,
+    UsbBlasterError,
+    VIRTUAL_IR_SELECTOR,
+    decode_response,
+    encode_request,
+)
 
 
 class RegisterFrameTests(unittest.TestCase):
@@ -58,6 +67,48 @@ class ByteShiftPackingTests(unittest.TestCase):
         self.assertEqual(first_response, 0)
         self.assertEqual((len(first_scan) + header) % 64, 0)
         self.assertEqual(second_response, 12)
+
+
+class BridgeHandshakeTests(unittest.TestCase):
+    def setUp(self):
+        self.blaster = object.__new__(UsbBlaster)
+        self.blaster._build_user_dr_scan = Mock(return_value=(bytearray(), 0))
+        self.blaster._exchange = Mock(return_value=b"")
+        self.blaster._decode_user_dr_response = Mock()
+        self.blaster._scan_user_dr = Mock()
+
+    def test_read_capture_uses_nop_frame(self):
+        self.blaster._decode_user_dr_response.return_value = DONE_BIT | (0x1234 << 5)
+
+        self.assertEqual(self.blaster.read_reg(9), 0x1234)
+        capture_frame = self.blaster._build_user_dr_scan.call_args_list[1].args[0]
+        self.assertEqual(capture_frame, NOP_FRAME)
+
+    def test_read_retries_until_done(self):
+        self.blaster._decode_user_dr_response.return_value = 0
+        self.blaster._scan_user_dr.side_effect = [0, DONE_BIT | (0xBEEF << 5)]
+
+        self.assertEqual(self.blaster.read_reg(2), 0xBEEF)
+        self.assertEqual(self.blaster._scan_user_dr.call_count, 2)
+        self.blaster._scan_user_dr.assert_called_with(NOP_FRAME, read_tdo=True)
+
+    def test_read_raises_when_bridge_never_completes(self):
+        self.blaster._decode_user_dr_response.return_value = 0
+        self.blaster._scan_user_dr.return_value = 0
+
+        with self.assertRaises(UsbBlasterError):
+            self.blaster.read_reg(0)
+
+    def test_read_raises_on_overrun(self):
+        self.blaster._decode_user_dr_response.return_value = DONE_BIT | OVERRUN_BIT
+
+        with self.assertRaises(UsbBlasterError):
+            self.blaster.read_reg(0)
+
+    def test_write_rejects_system_written_addresses(self):
+        with self.assertRaises(ValueError):
+            self.blaster.write_reg(8, 0)
+        self.blaster._scan_user_dr.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,8 +1,14 @@
 set_global_assignment -name FAMILY "MAX 10"
 set_global_assignment -name DEVICE 10M50DAF484C7G
-set_global_assignment -name TOP_LEVEL_ENTITY jtag_regfile
-set_global_assignment -name SYSTEMVERILOG_FILE reg_file.sv
-set_global_assignment -name SYSTEMVERILOG_FILE jtag_regfile.sv
+set_global_assignment -name TOP_LEVEL_ENTITY top
+set_global_assignment -name SYSTEMVERILOG_FILE jtag_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE system_stub.sv
+set_global_assignment -name SYSTEMVERILOG_FILE top.sv
+set_global_assignment -name SDC_FILE top.sdc
+set_location_assignment PIN_P11 -to MAX10_CLK1_50
+set_location_assignment PIN_B8 -to KEY[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to MAX10_CLK1_50
+set_instance_assignment -name IO_STANDARD "3.3 V SCHMITT TRIGGER" -to KEY[0]
 set_location_assignment PIN_A8 -to LEDR[0]
 set_location_assignment PIN_A9 -to LEDR[1]
 set_location_assignment PIN_A10 -to LEDR[2]

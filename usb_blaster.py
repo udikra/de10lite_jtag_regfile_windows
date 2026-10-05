@@ -18,8 +18,13 @@ MAX10_USER0_IR = 0x00C
 VIRTUAL_IR_BITS = 5
 VIRTUAL_IR_SELECTOR = 0b10000
 REGISTER_COUNT = 16
+JWSR_COUNT = 8  # addresses 0..7: JTAG writes, system reads; 8..15: system writes
 REGISTER_DATA_BITS = 32
 DR_BITS = 40
+NOP_FRAME = 1 << 39
+DONE_BIT = 1 << 37
+OVERRUN_BIT = 1 << 38
+READ_RETRIES = 8
 
 _LED = 0x20
 _NCE = 0x04
@@ -42,7 +47,7 @@ def _validate_address(address: int) -> None:
 
 
 def encode_request(address: int, write: bool, data: int = 0) -> int:
-    """Encode [reserved:3][data:32][write:1][address:4], LSB shifted first."""
+    """Encode [nop:1][reserved:2][data:32][write:1][address:4], LSB shifted first."""
     _validate_address(address)
     if not 0 <= data < (1 << REGISTER_DATA_BITS):
         raise ValueError("data must be an unsigned 32-bit integer")
@@ -335,22 +340,44 @@ class UsbBlaster:
         return self._decode_user_dr_response(response)
 
     def write_reg(self, address: int, data: int) -> None:
-        """Write one register using a 40-bit USER1 data-register scan."""
+        """Write one JWSR register (0..7) using a 40-bit USER1 data-register scan."""
+        _validate_address(address)
+        if address >= JWSR_COUNT:
+            raise ValueError(
+                f"address {address} is system-written; JTAG can write 0..{JWSR_COUNT - 1}"
+            )
         frame = encode_request(address, True, data)
         self._scan_user_dr(frame, read_tdo=False)
 
     def read_reg(self, address: int) -> int:
-        """Read one register; the first scan selects its address, the next captures it."""
+        """Read one register; the first scan issues the read, NOP scans capture it.
+
+        The read crosses into the system clock domain, so the capture is
+        retried with NOP scans until the bridge reports it done.
+        """
         _validate_address(address)
         request = encode_request(address, False)
         address_scan, _ = self._build_user_dr_scan(request, read_tdo=False)
         capture_scan, response_length = self._build_user_dr_scan(
-            request,
+            NOP_FRAME,
             read_tdo=True,
             starting_offset=len(address_scan),
         )
         response = self._exchange(address_scan + capture_scan, response_length)
-        return decode_response(self._decode_user_dr_response(response))
+        frame = self._decode_user_dr_response(response)
+        for _ in range(READ_RETRIES):
+            if frame & OVERRUN_BIT:
+                raise UsbBlasterError(
+                    "The bridge dropped a command issued while the previous one "
+                    "was still in flight; check that the system clock is running."
+                )
+            if frame & DONE_BIT:
+                return decode_response(frame)
+            frame = self._scan_user_dr(NOP_FRAME, read_tdo=True)
+        raise UsbBlasterError(
+            "The bridge did not complete the read; check that the system clock "
+            "is running and the system domain is out of reset."
+        )
 
     def close(self) -> None:
         if self._claimed_interface is not None:

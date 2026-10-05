@@ -1,27 +1,38 @@
-"""Demonstrate the package API with random values in all 16 registers."""
+"""Demonstrate the package API: write the 8 JWSR registers, read the 8 SWJR ones.
+
+With the placeholder system_stub.sv, SWJR register 8 + n holds ~JWSR register n.
+"""
 
 from random import SystemRandom
 
 from regfile import close, read_reg, write_reg
 
 
-def main() -> None:
-    expected = [SystemRandom().getrandbits(32) for _ in range(16)]
-    try:
-        for address, value in enumerate(expected):
-            write_reg(address, value)
-            print(f"write_reg({address}, 0x{value:08X})")
+JWSR_COUNT = 8
+MASK = 0xFFFFFFFF
 
-        for address, wanted in enumerate(expected):
-            value = read_reg(address)
-            status = "OK" if value == wanted else "MISMATCH"
-            print(f"read_reg({address}) -> 0x{value:08X} [{status}]")
-            if value != wanted:
-                raise SystemExit(f"register {address} verification failed")
+
+def main() -> None:
+    written = [SystemRandom().getrandbits(32) for _ in range(JWSR_COUNT)]
+    try:
+        for address, value in enumerate(written):
+            write_reg(address, value)
+
+        for address, value in enumerate(written):
+            swjr_address = JWSR_COUNT + address
+            result = read_reg(swjr_address)
+            wanted = ~value & MASK
+            status = "OK" if result == wanted else "MISMATCH"
+            print(
+                f"write_reg({address}, 0x{value:08X})  ->  "
+                f"read_reg({swjr_address:2}) = 0x{result:08X}  [~ {status}]"
+            )
+            if result != wanted:
+                raise SystemExit(f"register {swjr_address} verification failed")
     finally:
         close()
 
-    print("All 16 registers verified.")
+    print("All 8 SWJR registers hold the inverse of their JWSR register.")
 
 
 if __name__ == "__main__":

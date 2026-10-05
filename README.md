@@ -1,15 +1,17 @@
 # DE10-Lite JTAG Register File
 
-This repository provides a minimal setup reference for runtime logic register access via USB-Blaster JTAG on DE10-Lite FPGA. It includes a module-level Python functions for a 16 x 32-bit register file implemented in the supplied `reg_file.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
+This repository provides a minimal setup reference for runtime logic register access via USB-Blaster JTAG on DE10-Lite FPGA. It includes a module-level Python functions for a 16 x 32-bit register file implemented by the Virtual JTAG bridge in `jtag_bridge.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
 
 The verified setup is a DE10-Lite with MAX 10 `10M50DAF484C7G`, classic USB-Blaster USB ID `09FB:6001`, Quartus Prime Lite 23.1, 64-bit Anaconda Python 3.9.7, PyUSB 1.2.1, and `libusb-package` 1.0.30.0. This is the classic FT245/CPLD USB-Blaster protocol, not USB-Blaster II or FT232H MPSSE.
 
 ## Contents
 
-- `reg_file.sv`: supplied synchronous 16 x 32-bit register-file module.
-- `jtag_regfile.sv`: MAX 10 Virtual JTAG wrapper around that module.
-- `de10lite_jtag_regfile.qpf` and `.qsf`: Quartus project and pin assignments.
-- `de10lite_jtag_regfile.sof`: compiled image, included for convenience; rebuild it from the sources as described below.
+- `jtag_bridge.sv`: MAX 10 Virtual JTAG bridge with 8 JTAG-written (JWSR) and 8 system-written (SWJR) registers, crossing into the system clock with a req/ack handshake.
+- `system_stub.sv`: placeholder for the main design; drives SWJR register `8 + n` with `~JWSR[n]`.
+- `top.sv`: top level (50 MHz board clock as the system clock, `KEY[0]` system reset).
+- `top.sdc`: timing constraints; the JTAG and system clocks are asynchronous groups.
+- `top.qpf` and `top.qsf`: Quartus project and pin assignments.
+- `top.sof`: compiled image, included for convenience; rebuild it from the sources as described below.
 - `regfile/`: installable Python package with `read_reg`, `write_reg`, and `close`.
 - `usb_blaster.py`: direct classic USB-Blaster USB/JTAG transport.
 - `verify_regfile.py` and `demo_regfile.py`: random all-register test and interactive demo.
@@ -42,7 +44,7 @@ Extract the ZIP or clone the repository, then open Git Bash in the extracted pro
 cd /c/Users/<user>/Desktop/de10lite_jtag_regfile
 ```
 
-Keep the project files together: the QSF references `reg_file.sv` and `jtag_regfile.sv` by their project-relative names.
+Keep the project files together: the QSF references `jtag_bridge.sv`, `system_stub.sv`, `top.sv`, and `top.sdc` by their project-relative names.
 
 ## Install Python Package
 
@@ -73,10 +75,10 @@ Quartus programming requires its Altera driver. If the adapter is currently usin
 From Git Bash in the project directory, compile the sources:
 
 ```bash
-C:/intelFPGA_lite/23.1std/quartus/bin64/quartus_sh.exe --flow compile de10lite_jtag_regfile
+C:/intelFPGA_lite/23.1std/quartus/bin64/quartus_sh.exe --flow compile top
 ```
 
-The build produces `de10lite_jtag_regfile.sof` in the project directory. Confirm the cable and FPGA are visible:
+The build produces `top.sof` in the project directory. Confirm the cable and FPGA are visible:
 
 ```bash
 C:/intelFPGA_lite/23.1std/quartus/bin64/jtagconfig.exe
@@ -85,7 +87,7 @@ C:/intelFPGA_lite/23.1std/quartus/bin64/jtagconfig.exe
 Then load the image into FPGA SRAM:
 
 ```bash
-C:/intelFPGA_lite/23.1std/quartus/bin64/quartus_pgm.exe -m JTAG -c "USB-Blaster [USB-0]" -o "p;de10lite_jtag_regfile.sof"
+C:/intelFPGA_lite/23.1std/quartus/bin64/quartus_pgm.exe -m JTAG -c "USB-Blaster [USB-0]" -o "p;top.sof"
 ```
 
 Quartus should report `Configuration succeeded`. This operation programs volatile SRAM, not the board's configuration flash. Power loss or a board reset requires programming the SOF again.
@@ -129,7 +131,7 @@ Do not switch drivers while a Quartus process is using the cable. Driver re-bind
 
 ## Python API
 
-The package opens one USB connection lazily on its first call and reuses it. Addresses must be integers from 0 to 15; data must be an unsigned 32-bit integer.
+The package opens one USB connection lazily on its first call and reuses it. `read_reg` accepts addresses 0 to 15 and `write_reg` accepts 0 to 7 (8 to 15 are written by the system); data must be an unsigned 32-bit integer.
 
 ```python
 from regfile import close, read_reg, write_reg
@@ -140,7 +142,7 @@ print(f"0x{value:08X}")
 close()
 ```
 
-`close()` is optional at process exit, but is useful for explicit cleanup and tests. Opening the driver resets the JTAG TAP, which also asserts the register file's active-low reset; register contents are volatile.
+`close()` is optional at process exit, but is useful for explicit cleanup and tests. Opening the driver resets the JTAG TAP, which does not clear the registers; pressing `KEY[0]` resets the system clock domain and clears them. Register contents are volatile.
 
 ## Random Test And Demo
 
@@ -163,7 +165,9 @@ It imports the same package functions, prints each random write and read, and ex
 
 ## Protocol And Measured Timing
 
-The wrapper instantiates MAX 10 Virtual JTAG with a one-bit virtual IR and routes a 40-bit data frame to the supplied synchronous register-file module. The frame is shifted LSB-first: address `[3:0]`, write-enable bit `4`, data `[36:5]`, and reserved `[39:37]`. A read selects the address on one scan, then captures the synchronous `data_out` on the following scan.
+The bridge instantiates MAX 10 Virtual JTAG with a one-bit virtual IR and a 40-bit data frame, shifted LSB-first. Requests carry address `[3:0]`, write-enable bit `4`, data `[36:5]`, reserved `[38:37]`, and a NOP bit `39` that suppresses the command. Responses carry read data `[36:5]`, a done flag `37`, and an overrun flag `38`.
+
+Addresses 0..7 (JWSR) are written over JTAG and read by the system; addresses 8..15 (SWJR) are written by the system and read over JTAG. JTAG can read all 16, and JTAG writes to 8..15 are ignored. The registers live in the system clock domain. Because TCK only runs during scans, Update-DR latches each command and toggles a request bit; the system side executes it after a 2-FF synchronizer and toggles an acknowledge bit back. A read issues the command on one scan and captures the result with NOP scans until `done` is set. A command issued while the previous one is still in flight is dropped and sets `overrun`, which `read_reg` reports as an error. While the system domain is held in reset, commands wait and reads time out.
 
 The throughput-focused transport caches the USER0/Virtual JTAG selection, uses byte-shift mode for the first 32 DR bits, packet-aligns each byte-shift command, and batches the two scans required for a synchronous read. On the verified board, `speed_test.py` completed 1,000 random write/read/verify pairs in 2.105 s (2.105 ms per pair, about 475 pairs/s). This measurement includes initial lazy connection setup and is specific to the tested PC, board, driver, and USB topology; it is not a hard timing guarantee.
 

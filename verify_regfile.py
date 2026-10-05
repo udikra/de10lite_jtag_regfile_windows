@@ -1,20 +1,28 @@
-"""Write random values to all 16 registers and verify every readback."""
+"""Write random values to the 8 JWSR registers and verify both bridge directions.
+
+With the placeholder system_stub.sv, SWJR register 8 + n holds ~JWSR register n.
+"""
 
 from random import SystemRandom
 
 from regfile import close, read_reg, write_reg
 
 
+JWSR_COUNT = 8
+MASK = 0xFFFFFFFF
+
+
 def main() -> None:
-    expected = [SystemRandom().getrandbits(32) for _ in range(16)]
+    written = [SystemRandom().getrandbits(32) for _ in range(JWSR_COUNT)]
+    expected = written + [~value & MASK for value in written]
     try:
-        for address, value in enumerate(expected):
+        for address, value in enumerate(written):
             write_reg(address, value)
 
-        actual = [read_reg(address) for address in range(16)]
+        actual = [read_reg(address) for address in range(len(expected))]
         mismatches = [
             (address, expected[address], actual[address])
-            for address in range(16)
+            for address in range(len(expected))
             if actual[address] != expected[address]
         ]
     finally:
@@ -25,7 +33,7 @@ def main() -> None:
             print(f"FAIL reg[{address}]: expected 0x{wanted:08X}, got 0x{got:08X}")
         raise SystemExit(1)
 
-    print("PASS: all 16 registers matched their random 32-bit values")
+    print("PASS: 8 JWSR registers read back and 8 SWJR registers hold their inverses")
 
 
 if __name__ == "__main__":
