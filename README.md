@@ -1,6 +1,6 @@
-# DE10-Lite JTAG Register File
+# DE10-Lite USB-Blaster Runtime Data Link
 
-This repository provides a minimal setup reference for runtime logic register access via USB-Blaster JTAG on DE10-Lite FPGA. It includes a module-level Python functions for a 16 x 32-bit register file and a 256 x 32-bit (1 KiB) data buffer implemented by the Virtual JTAG bridge in `jtag_bridge.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
+This repository provides a minimal setup reference for exchanging data with logic running on a DE10-Lite FPGA through the board's own USB-Blaster: the same cable that powers and programs the board, with no extra UART or adapter. It includes module-level Python functions for a 16 x 32-bit register file and a 256 x 32-bit (1 KiB) data buffer implemented by the Virtual JTAG bridge in `jtag_bridge.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
 
 The verified setup is a DE10-Lite with MAX 10 `10M50DAF484C7G`, classic USB-Blaster USB ID `09FB:6001`, Quartus Prime Lite 23.1, 64-bit Anaconda Python 3.9.7, PyUSB 1.2.1, and `libusb-package` 1.0.30.0. This is the classic FT245/CPLD USB-Blaster protocol, not USB-Blaster II or FT232H MPSSE.
 
@@ -43,7 +43,7 @@ The provided bitstream and JTAG wrapper target the device and board pinout above
 Extract the ZIP or clone the repository, then open Git Bash in the extracted project folder. For example:
 
 ```bash
-cd /c/Users/<user>/Desktop/de10lite_jtag_regfile
+cd /c/Users/<user>/Desktop/de10lite_usb_blaster_runtime_data_link
 ```
 
 Keep the project files together: the QSF references `buffer_ram.sv`, `jtag_bridge.sv`, `system_stub.sv`, `top.sv`, and `top.sdc` by their project-relative names.
@@ -60,7 +60,7 @@ python -m pip install -e .
 python -m unittest discover -v
 ```
 
-The editable install provides `from regfile import read_reg, write_reg, close` from this environment. The same versions can be installed without editable packaging using `python -m pip install -r requirements.txt`, while running Python from this project directory.
+The editable install provides `from regfile import read_reg, write_reg, store_buf, load_buf, close` from this environment. The same versions can be installed without editable packaging using `python -m pip install -r requirements.txt`, while running Python from this project directory.
 
 If `python` is not the interpreter you intend to use, create the environment with the full path to that Python executable. The original tested interpreter was:
 
