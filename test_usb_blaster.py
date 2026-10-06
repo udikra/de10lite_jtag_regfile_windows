@@ -2,11 +2,15 @@ import unittest
 from unittest.mock import Mock
 
 from usb_blaster import (
+    BUFFER_BYTES,
     DONE_BIT,
     NOP_FRAME,
     OVERRUN_BIT,
     UsbBlaster,
     UsbBlasterError,
+    VIRTUAL_IR_BUF_LOAD,
+    VIRTUAL_IR_BUF_STORE,
+    VIRTUAL_IR_REG,
     VIRTUAL_IR_SELECTOR,
     decode_response,
     encode_request,
@@ -109,6 +113,118 @@ class BridgeHandshakeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.blaster.write_reg(8, 0)
         self.blaster._scan_user_dr.assert_not_called()
+
+
+def clock_edges(output):
+    """Replay a USB-Blaster byte stream as (tms, tdi) per rising TCK edge."""
+    edges = []
+    tck = tms = 0
+    index = 0
+    while index < len(output):
+        value = output[index]
+        index += 1
+        if value & 0x80:
+            count = value & 0x3F
+            for byte in output[index : index + count]:
+                edges.extend((tms, (byte >> bit) & 1) for bit in range(8))
+            index += count
+            continue
+        if value & 0x01 and not tck:
+            edges.append(((value >> 1) & 1, (value >> 4) & 1))
+        tck = value & 0x01
+        tms = (value >> 1) & 1
+    return edges
+
+
+class BufferScanTests(unittest.TestCase):
+    def setUp(self):
+        self.blaster = object.__new__(UsbBlaster)
+        self.blaster._packet_size = 64
+
+    def shifted_bits(self, output):
+        edges = clock_edges(output)
+        self.assertEqual([tms for tms, _ in edges[:3]], [1, 0, 0])
+        self.assertEqual([tms for tms, _ in edges[-2:]], [1, 0])
+        shift = edges[3:-2]
+        self.assertEqual([tms for tms, _ in shift[:-1]], [0] * (len(shift) - 1))
+        self.assertEqual(shift[-1][0], 1)
+        return [tdi for _, tdi in shift]
+
+    def test_store_scan_shifts_data_lsb_first(self):
+        data = bytes(range(256)) * 4
+        output, response_length = self.blaster._build_buffer_scan(data, False)
+
+        bits = self.shifted_bits(output)
+        self.assertEqual(response_length, 0)
+        self.assertEqual(len(bits), len(data) * 8)
+        self.assertEqual(
+            bytes(
+                sum(bit << i for i, bit in enumerate(bits[n : n + 8]))
+                for n in range(0, len(bits), 8)
+            ),
+            data,
+        )
+
+    def test_byte_shift_headers_are_packet_aligned(self):
+        output, _ = self.blaster._build_buffer_scan(bytes(BUFFER_BYTES), True)
+        headers = [i for i, value in enumerate(output) if value & 0x80]
+
+        self.assertEqual(len(headers), -(-(BUFFER_BYTES - 1) // 62))
+        self.assertTrue(all(i % 64 == 0 for i in headers))
+
+    def test_load_response_fills_whole_packets_and_decodes(self):
+        output, response_length = self.blaster._build_buffer_scan(bytes(8), True)
+        response = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77])
+        response += bytes([1, 0, 1, 0, 0, 0, 0, 1]) + bytes(response_length - 15)
+
+        self.assertEqual(len(self.shifted_bits(output)), 64)
+        self.assertEqual(response_length % 62, 0)
+        self.assertEqual(
+            self.blaster._decode_buffer_response(response, 8),
+            bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x85]),
+        )
+
+    def test_store_pads_partial_word_and_selects_store_ir(self):
+        self.blaster._select_user_dr = Mock()
+        self.blaster._exchange = Mock()
+        self.blaster.store_buf([1, 2, 3, 4, 5])
+
+        self.blaster._select_user_dr.assert_called_once_with(VIRTUAL_IR_BUF_STORE)
+        bits = self.shifted_bits(self.blaster._exchange.call_args.args[0])
+        self.assertEqual(len(bits), 64)
+
+    def test_load_selects_load_ir_and_trims_length(self):
+        self.blaster._select_user_dr = Mock()
+        self.blaster._exchange_overlapped = Mock(
+            side_effect=lambda output, length: bytes([0xAB]) * length
+        )
+
+        self.assertEqual(self.blaster.load_buf(5), [0xAB] * 5)
+        self.blaster._select_user_dr.assert_called_once_with(VIRTUAL_IR_BUF_LOAD)
+
+    def test_rejects_oversized_transfers(self):
+        with self.assertRaises(ValueError):
+            self.blaster.store_buf(bytes(BUFFER_BYTES + 1))
+        with self.assertRaises(ValueError):
+            self.blaster.load_buf(BUFFER_BYTES + 1)
+        with self.assertRaises(ValueError):
+            self.blaster.store_buf([256])
+
+
+class VirtualIrSelectionTests(unittest.TestCase):
+    def test_reselects_only_when_virtual_ir_changes(self):
+        blaster = object.__new__(UsbBlaster)
+        blaster.ir_bits = 10
+        blaster.user0_ir = 0x00C
+        blaster.user1_ir = 0x00E
+        blaster.virtual_ir_selector = VIRTUAL_IR_SELECTOR
+        blaster._selected_virtual_ir = None
+        blaster._exchange = Mock()
+
+        for virtual_ir in (VIRTUAL_IR_REG, VIRTUAL_IR_REG, VIRTUAL_IR_BUF_LOAD,
+                           VIRTUAL_IR_BUF_LOAD, VIRTUAL_IR_REG):
+            blaster._select_user_dr(virtual_ir)
+        self.assertEqual(blaster._exchange.call_count, 3)
 
 
 if __name__ == "__main__":

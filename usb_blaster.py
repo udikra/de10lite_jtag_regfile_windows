@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from typing import Optional
 
@@ -16,7 +17,10 @@ MAX10_IR_BITS = 10
 MAX10_USER1_IR = 0x00E
 MAX10_USER0_IR = 0x00C
 VIRTUAL_IR_BITS = 5
-VIRTUAL_IR_SELECTOR = 0b10000
+VIRTUAL_IR_SELECTOR = 0b10000  # node address 1 above the 4-bit node IR field
+VIRTUAL_IR_REG = 0  # 40-bit register-file command frame
+VIRTUAL_IR_BUF_STORE = 1  # buffer write stream
+VIRTUAL_IR_BUF_LOAD = 2  # buffer read stream
 REGISTER_COUNT = 16
 JWSR_COUNT = 8  # addresses 0..7: JTAG writes, system reads; 8..15: system writes
 REGISTER_DATA_BITS = 32
@@ -25,6 +29,12 @@ NOP_FRAME = 1 << 39
 DONE_BIT = 1 << 37
 OVERRUN_BIT = 1 << 38
 READ_RETRIES = 8
+BUFFER_WORDS = 256
+BUFFER_BYTES = BUFFER_WORDS * 4
+
+# Each byte-shift command carries up to 63 bytes. With 62, the header, data and
+# one idle byte fill a 64-byte packet exactly, so every header stays aligned.
+_BUFFER_CHUNK_BYTES = 62
 
 _LED = 0x20
 _NCE = 0x04
@@ -86,7 +96,7 @@ class UsbBlaster:
         self.ir_bits = ir_bits
         self.timeout_ms = timeout_ms
         self._claimed_interface = None
-        self._user_dr_selected = False
+        self._selected_virtual_ir = None
 
         if device is None:
             device = self._find_device()
@@ -278,16 +288,18 @@ class UsbBlaster:
         self._append_clock(output, 0, 0)
         self._exchange(output)
 
-    def _select_user_dr(self) -> None:
-        if self._user_dr_selected:
+    def _select_user_dr(self, virtual_ir: int = VIRTUAL_IR_REG) -> None:
+        if self._selected_virtual_ir == virtual_ir:
             return
 
         output = bytearray()
         self._append_ir_scan(output, self.user1_ir)
-        self._append_dr_scan(output, self.virtual_ir_selector, VIRTUAL_IR_BITS)
+        self._append_dr_scan(
+            output, self.virtual_ir_selector | virtual_ir, VIRTUAL_IR_BITS
+        )
         self._append_ir_scan(output, self.user0_ir)
         self._exchange(output)
-        self._user_dr_selected = True
+        self._selected_virtual_ir = virtual_ir
 
     def _build_user_dr_scan(
         self, frame: int, read_tdo: bool, starting_offset: int = 0
@@ -378,6 +390,110 @@ class UsbBlaster:
             "The bridge did not complete the read; check that the system clock "
             "is running and the system domain is out of reset."
         )
+
+    def _build_buffer_scan(self, data: bytes, read_tdo: bool) -> tuple[bytearray, int]:
+        """Build one DR scan of len(data) * 8 bits; return it and its TDO byte count.
+
+        All bytes but the last use byte-shift mode, one packet-aligned command
+        per chunk; the last byte is bit-banged so its final bit can leave
+        Shift-DR. A read is padded with TDO reads that do not clock TCK, so the
+        response fills whole IN packets and none waits for the latency timer.
+        """
+        idle = self._bitbang_byte(0, 0, 0)
+        output = bytearray()
+        for tms in (1, 0, 0):
+            self._append_clock(output, tms, 0)
+        output.append(idle)
+
+        shifted = data[:-1]
+        for start in range(0, len(shifted), _BUFFER_CHUNK_BYTES):
+            chunk = shifted[start : start + _BUFFER_CHUNK_BYTES]
+            output.extend([idle] * ((-len(output)) % self._packet_size))
+            output.append(_SHIFT_MODE | (_READ if read_tdo else 0) | len(chunk))
+            output.extend(chunk)
+            output.append(idle)
+
+        last = data[-1]
+        for bit_index in range(8):
+            self._append_clock(
+                output, int(bit_index == 7), (last >> bit_index) & 1, read_tdo
+            )
+        self._append_clock(output, 1, 0)
+        self._append_clock(output, 0, 0)
+        output.append(idle)
+        if not read_tdo:
+            return output, 0
+
+        response_length = len(data) - 1 + 8
+        padding = -response_length % (self._packet_size - 2)
+        output.extend([self._bitbang_byte(0, 0, 0, read=True)] * padding)
+        return output, response_length + padding
+
+    @staticmethod
+    def _decode_buffer_response(response: bytes, length: int) -> bytes:
+        """Join the byte-shift TDO bytes with the eight bit-banged bits of the last byte."""
+        last = 0
+        for bit_index, value in enumerate(response[length - 1 : length + 7]):
+            if value & _READ_TDO:
+                last |= 1 << bit_index
+        return bytes(response[: length - 1]) + bytes([last])
+
+    def _exchange_overlapped(self, output: bytearray, read_length: int) -> bytes:
+        """Write and read concurrently, for responses larger than the adapter FIFO.
+
+        The FT245 holds only a few hundred TDO bytes; once it is full the
+        adapter stops taking commands, so a write-then-read exchange would
+        stall. Here a thread writes while this one keeps draining TDO data.
+        """
+        write_error = []
+
+        def write() -> None:
+            try:
+                self._endpoint_out.write(output, timeout=self.timeout_ms)
+            except usb.core.USBError as exc:
+                write_error.append(exc)
+
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        try:
+            response = self._read_ftdi_payload(read_length)
+        finally:
+            writer.join()
+        if write_error:
+            raise UsbBlasterError(
+                f"USB-Blaster bulk transfer failed: {write_error[0]}"
+            ) from write_error[0]
+        return response
+
+    def store_buf(self, data) -> None:
+        """Write bytes to the buffer from word 0 in one BUF_STORE scan.
+
+        Words are little-endian (data[0] is bits 7..0 of word 0). Up to
+        BUFFER_BYTES bytes; a trailing partial word is zero-padded.
+        """
+        data = bytes(data)
+        if len(data) > BUFFER_BYTES:
+            raise ValueError(f"buffer holds at most {BUFFER_BYTES} bytes")
+        if not data:
+            return
+        data += bytes(-len(data) % 4)
+        self._select_user_dr(VIRTUAL_IR_BUF_STORE)
+        output, _ = self._build_buffer_scan(data, read_tdo=False)
+        self._exchange(output)
+
+    def load_buf(self, length: int = BUFFER_BYTES) -> list[int]:
+        """Read `length` bytes from the buffer, starting at word 0, in one BUF_LOAD scan."""
+        if not 0 <= length <= BUFFER_BYTES:
+            raise ValueError(f"length must be in range 0..{BUFFER_BYTES}")
+        if not length:
+            return []
+        scan_length = -(-length // 4) * 4
+        self._select_user_dr(VIRTUAL_IR_BUF_LOAD)
+        output, response_length = self._build_buffer_scan(
+            bytes(scan_length), read_tdo=True
+        )
+        response = self._exchange_overlapped(output, response_length)
+        return list(self._decode_buffer_response(response, scan_length)[:length])
 
     def close(self) -> None:
         if self._claimed_interface is not None:
