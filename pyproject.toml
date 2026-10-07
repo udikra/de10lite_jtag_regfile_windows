@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "de10lite-usb-blaster-runtime-data-link"
-version = "0.1.0"
+version = "1.0.0"
 description = "Runtime register and buffer access to a DE10-Lite FPGA over its USB-Blaster"
 requires-python = ">=3.9"
 license = {text = "0BSD"}
