@@ -1,54 +1,50 @@
 // system_stub.sv  -  placeholder for the main design (sys_clk domain)
 //
-// Drives each SWJR register with the bitwise inverse of the matching JWSR
-// register, so both bridge directions can be checked from the host.
+// Registers: drives SWJR register 8 + n with the bitwise inverse of JWSR
+// register n (n = 0..5), so both bridge directions can be checked from the
+// host. JWSR 5..7 and SWJR 14..15 belong to sys_access.sv.
 //
-// Each JTAG write to JWSR register 7 also inverts all 256 buffer words in
-// place through the buffer's system port (read, then write back, 2 cycles per
-// word, about 10 us at 50 MHz), so the system side of the buffer can be
-// checked too. The host must not scan the buffer during that pass.
+// System address space: a 16384 x 32-bit (64 KiB) RAM answering the sa_* bus,
+// aliased every 64 KiB (word address sa_addr[15:2]). To exercise the
+// handshake, an LFSR randomly delays sa_ready by zero or more cycles: a
+// transaction takes 2 cycles at best and about 3 on average.
 module system_stub (
     input  wire              clk,
     input  wire              rst_n,
-    input  wire  [7:0][31:0] jwsr,
-    input  wire  [7:0]       jwsr_wr,
-    output logic [7:0][31:0] swjr,
+    input  wire  [5:0][31:0] jwsr,
+    output logic [5:0][31:0] swjr,
 
-    output wire              buf_en,
-    output wire              buf_rd,
-    output wire  [7:0]       buf_addr,
-    output wire  [31:0]      buf_wdata,
-    input  wire  [31:0]      buf_rdata
+    input  wire  [31:0]      sa_addr,
+    input  wire              sa_enable,
+    input  wire              sa_wr,
+    input  wire  [31:0]      sa_data_out,
+    output logic [31:0]      sa_data_in,
+    output logic             sa_ready
 );
     always @(posedge clk) begin
         if (!rst_n) swjr <= '0;
         else        swjr <= ~jwsr;
     end
 
-    reg       invert_busy;
-    reg       invert_write;             // 0: read word, 1: write it back inverted
-    reg [7:0] invert_addr;
+    reg [15:0] lfsr = 16'hACE1;
+    always @(posedge clk)
+        lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]};
+
+    // The RAM is not reset, so it survives KEY[0].
+    reg  [31:0] mem [0:16383];
+    wire [13:0] word = sa_addr[15:2];
+    wire        accept = sa_enable && !sa_ready && lfsr[0];
 
     always @(posedge clk) begin
-        if (!rst_n) begin
-            invert_busy <= 1'b0;
-            invert_write <= 1'b0;
-            invert_addr <= 8'd0;
-        end else if (!invert_busy) begin
-            invert_busy <= jwsr_wr[7];
-            invert_write <= 1'b0;
-            invert_addr <= 8'd0;
-        end else begin
-            invert_write <= !invert_write;
-            if (invert_write) begin
-                invert_addr <= invert_addr + 8'd1;
-                invert_busy <= invert_addr != 8'd255;
-            end
+        if (accept) begin
+            if (sa_wr)
+                mem[word] <= sa_data_out;
+            sa_data_in <= mem[word];
         end
     end
 
-    assign buf_en = invert_busy;
-    assign buf_rd = !invert_write;
-    assign buf_addr = invert_addr;
-    assign buf_wdata = ~buf_rdata;
+    always @(posedge clk) begin
+        if (!rst_n) sa_ready <= 1'b0;
+        else        sa_ready <= accept;
+    end
 endmodule

@@ -1,4 +1,4 @@
-// buffer_ram.sv  -  256 x 32-bit true dual-port RAM, one clock per port
+// buffer_ram.sv  -  2**ADDR_BITS x 32-bit true dual-port RAM, one clock per port
 //
 // Direct altsyncram instance (M9K blocks, true dual-port, two clocks). Reads
 // have one cycle of latency: address and control are registered, the output

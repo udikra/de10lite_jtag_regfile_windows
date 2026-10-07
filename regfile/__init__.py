@@ -1,4 +1,4 @@
-"""Python API for the DE10-Lite 16 x 32-bit JTAG register file and 1 KiB buffer."""
+"""Python API for the DE10-Lite JTAG register file, 16 KiB buffer and system access."""
 
 from atexit import register as _register_atexit
 from typing import Optional
@@ -36,6 +36,37 @@ def load_buf(length: int = BUFFER_BYTES) -> list:
     return _get_device().load_buf(length)
 
 
+def sys_wr(sys_addr: int, sys_data_in: int) -> None:
+    """Write one 32-bit word to the system address space at sys_addr."""
+    _get_device().sys_wr(sys_addr, sys_data_in)
+
+
+def sys_rd(sys_addr: int) -> int:
+    """Read one 32-bit word from the system address space at sys_addr."""
+    return _get_device().sys_rd(sys_addr)
+
+
+def data_store(sys_start_addr: int, num_bytes: int, data_bytes_list) -> None:
+    """Write the first num_bytes of data_bytes_list to system bytes from sys_start_addr."""
+    data = bytes(data_bytes_list[:num_bytes])
+    if len(data) != num_bytes:
+        raise ValueError(f"data_bytes_list holds fewer than {num_bytes} bytes")
+    _get_device().data_store(sys_start_addr, data)
+
+
+def data_load(sys_start_addr: int, num_bytes: int, data_bytes_list: Optional[list] = None) -> list:
+    """Read num_bytes system bytes from sys_start_addr.
+
+    Returns them as a list of ints; when data_bytes_list is given, its
+    contents are replaced with them too.
+    """
+    data = _get_device().data_load(sys_start_addr, num_bytes)
+    if data_bytes_list is None:
+        return data
+    data_bytes_list[:] = data
+    return data_bytes_list
+
+
 def close() -> None:
     """Close the USB-Blaster connection, if it has been opened."""
     global _device
@@ -47,4 +78,15 @@ def close() -> None:
 
 _register_atexit(close)
 
-__all__ = ["BUFFER_BYTES", "close", "load_buf", "read_reg", "store_buf", "write_reg"]
+__all__ = [
+    "BUFFER_BYTES",
+    "close",
+    "data_load",
+    "data_store",
+    "load_buf",
+    "read_reg",
+    "store_buf",
+    "sys_rd",
+    "sys_wr",
+    "write_reg",
+]

@@ -1,9 +1,10 @@
-"""Check the 1 KiB JTAG buffer on hardware and time full-buffer transfers.
+"""Check the 16 KiB JTAG buffer on hardware and time full-buffer transfers.
 
 1. Store/load random data of several lengths, interleaved with register access.
-2. Write JWSR register 7: the placeholder system_stub.sv inverts every buffer
-   word through the system port, so the next load must return the inverse.
-3. Time repeated full-buffer stores and loads.
+2. Time repeated full-buffer stores and loads.
+
+The buffer's system port belongs to sys_access.sv; verify_sys_access.py
+checks it.
 """
 
 from random import SystemRandom
@@ -43,10 +44,6 @@ def main() -> None:
             check(f"read_reg after {length}-byte store", [read_reg(0)], [length])
             check("full load", load_buf(), full)
         print(f"PASS: store/load of {', '.join(map(str, LENGTHS))} bytes")
-
-        write_reg(7, 0)
-        check("system-side inversion", load_buf(), [~b & 0xFF for b in full])
-        print("PASS: system port inverted all 256 words")
 
         data = random_bytes(BUFFER_BYTES)
         started = perf_counter()

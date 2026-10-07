@@ -20,9 +20,10 @@
 // multi-bit fields are stable when read. A command arriving while the previous
 // one is still in flight is dropped and reported through the overrun flag.
 //
-// Buffer (2**BUF_ADDR_BITS x 32-bit dual-port RAM, default 256 words = 1 KiB;
+// Buffer (2**BUF_ADDR_BITS x 32-bit dual-port RAM, default 256 words = 1 KiB,
+// top.sv uses 4096 words = 16 KiB;
 // port A on TCK, port B on sys_clk):
-// BUF_STORE and BUF_LOAD behave as one DR of up to 8192 bits (256 words),
+// BUF_STORE and BUF_LOAD behave as one DR of up to 32 * 2**BUF_ADDR_BITS bits,
 // word 0 bit 0 shifted first, held in a single 32-bit shift register. Every
 // scan starts at word 0, and a scan of n * 32 bits transfers words 0..n-1
 // (the address wraps after the last word).
@@ -32,7 +33,9 @@
 //          with the next word, which the RAM has already prefetched. TDI is
 //          ignored.
 // The two ports are not arbitrated: the system must leave the buffer alone
-// while JTAG scans it, coordinated through the registers.
+// while JTAG scans it, coordinated through the registers. In top.sv the
+// system port belongs to sys_access.sv, which only uses it while a command
+// is in flight.
 module jtag_bridge #(
     parameter int BUF_ADDR_BITS = 8         // buffer depth 2**BUF_ADDR_BITS words
 ) (
