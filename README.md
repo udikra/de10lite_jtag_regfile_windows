@@ -1,6 +1,26 @@
 # DE10-Lite USB-Blaster Runtime Data Link
 
-This repository provides a minimal setup reference for exchanging data with logic running on a DE10-Lite FPGA through the board's own USB-Blaster: the same cable that powers and programs the board, with no extra UART or adapter. It includes module-level Python functions for a 16 x 32-bit register file and a 4096 x 32-bit (16 KiB) data buffer implemented by the Virtual JTAG bridge in `jtag_bridge.sv`, and, built on both, word and byte-block access to the design's own 32-bit address space through `sys_access.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
+Read and write your DE10-Lite design's memory from Python over the board's onboard USB-Blaster: the same USB cable that powers and programs the board. You don't need a UART cable, extra adapter, Nios II, or running Quartus tools.
+
+```python
+from regfile import sys_wr, sys_rd, data_store, data_load
+
+sys_wr(0x1000, 0xDEADBEEF)                 # one 32-bit word into your design
+print(hex(sys_rd(0x1000)))                 # and back
+data_store(0x2003, len(blob), blob)        # any byte count, any alignment
+data = data_load(0x2003, len(blob))
+```
+
+- **About 4 Mbit/s** for block transfers (about 4.4 Mbit/s store, 3.4 Mbit/s load), about 0.55 ms per single word, close to what the classic USB-Blaster hardware allows.
+- **Generic system bus**: your design answers a simple `sa_addr` / `sa_enable` / `sa_wr` / `sa_data_out` / `sa_data_in` / `sa_ready` interface with any number of wait states; unaligned byte spans are handled with hardware read-modify-write.
+- **Pure Python host side**: PyUSB talks to the USB-Blaster directly, with no `jtagd`, `nios2-terminal`, or Quartus subprocess.
+- **Verified on hardware** with randomized tests against a model, all included.
+
+Free to use for any purpose, without restrictions (0BSD, see [License](#license)).
+
+## Overview
+
+This repository provides a minimal setup reference for exchanging data with logic running on a DE10-Lite FPGA through the board's own USB-Blaster. It includes module-level Python functions for a 16 x 32-bit register file and a 4096 x 32-bit (16 KiB) data buffer implemented by the Virtual JTAG bridge in `jtag_bridge.sv`, and, built on both, word and byte-block access to the design's own 32-bit address space through `sys_access.sv`. Python talks directly to the classic Altera USB-Blaster using PyUSB; it does not start Quartus, `jtagd`, or another subprocess.
 
 The verified setup is a DE10-Lite with MAX 10 `10M50DAF484C7G`, classic USB-Blaster USB ID `09FB:6001`, Quartus Prime Lite 23.1, 64-bit Anaconda Python 3.9.7, PyUSB 1.2.1, and `libusb-package` 1.0.30.0. This is the classic FT245/CPLD USB-Blaster protocol, not USB-Blaster II or FT232H MPSSE.
 
@@ -266,3 +286,7 @@ Effective rates of the Python calls on the same board, including every handshake
 | 64 KiB | 117 to 130 ms | 4.0 to 4.5 | 143 to 158 ms | 3.3 to 3.7 |
 
 Each call has a fixed cost of roughly 1 to 2 ms, so the link reaches half its streaming rate at a few KiB per call. Single accesses and small transfers vary by up to 1 ms from run to run, because USB full speed schedules transfers in 1 ms frames.
+
+## License
+
+Zero-Clause BSD (0BSD): anyone may use, copy, modify, and distribute this work for any purpose, with or without fee, and without any obligation, not even attribution. See [LICENSE](LICENSE).
